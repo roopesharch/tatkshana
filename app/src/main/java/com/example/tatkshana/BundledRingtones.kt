@@ -1,4 +1,4 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import android.content.Context
 import android.net.Uri

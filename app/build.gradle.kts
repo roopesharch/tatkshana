@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.tatkshana"
+    namespace = "com.roopesh.tatkshana"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.tatkshana"
+        applicationId = "com.roopesh.tatkshana"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

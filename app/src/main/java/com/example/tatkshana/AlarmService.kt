@@ -1,4 +1,4 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -15,6 +15,7 @@ import android.os.IBinder
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 
 class AlarmService : Service() {
@@ -23,10 +24,16 @@ class AlarmService : Service() {
     private var vibrator: Vibrator? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "STOP_ALARM") {
-            stopAlarmPlayback()
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            "STOP_ALARM" -> {
+                stopAlarmPlayback()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            "MUTE_SOUND_KEEP_VIBRATION" -> {
+                silenceAlarmSound()
+                return START_STICKY
+            }
         }
 
         val taskId = intent?.getStringExtra("TASK_ID") ?: return START_NOT_STICKY
@@ -52,7 +59,7 @@ class AlarmService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Tatkshana • ${task.priority.label}")
-            .setContentText(task.title)
+            .setContentText("${task.title} — Tap to open alarm")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -65,9 +72,13 @@ class AlarmService : Service() {
         startForeground(1001, notification)
         startAlarmPlayback(task)
 
-        try {
-            startActivity(fullScreenIntent)
-        } catch (_: Exception) {
+        // If Display Over Other Apps is enabled, bring the full-screen alarm UI right to the front;
+        // otherwise the alarm panel notification remains ready to tap open into full screen.
+        if (Settings.canDrawOverlays(this)) {
+            try {
+                startActivity(fullScreenIntent)
+            } catch (_: Exception) {
+            }
         }
 
         return START_STICKY
@@ -136,14 +147,26 @@ class AlarmService : Service() {
         }
     }
 
-    private fun stopAlarmPlayback() {
+    private fun silenceAlarmSound() {
         try {
             mediaPlayer?.stop()
             mediaPlayer?.release()
         } catch (_: Exception) {
         }
         mediaPlayer = null
-        vibrator?.cancel()
+    }
+
+    private fun stopVibration() {
+        try {
+            vibrator?.cancel()
+        } catch (_: Exception) {
+        }
+        vibrator = null
+    }
+
+    private fun stopAlarmPlayback() {
+        silenceAlarmSound()
+        stopVibration()
     }
 
     private fun createNotificationChannel() {

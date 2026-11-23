@@ -1,16 +1,18 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,15 +23,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -37,13 +45,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -51,7 +60,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.example.tatkshana.ui.theme.TatkshanaTheme
+import com.roopesh.tatkshana.ui.theme.TatkshanaTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.random.Random
 
 class AlarmRingingActivity : ComponentActivity() {
@@ -103,6 +115,21 @@ class AlarmRingingActivity : ComponentActivity() {
         }
     }
 
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            muteAlarmSoundKeepVibration()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun muteAlarmSoundKeepVibration() {
+        val muteIntent = Intent(this, AlarmService::class.java).apply {
+            action = "MUTE_SOUND_KEEP_VIBRATION"
+        }
+        startService(muteIntent)
+    }
+
     private fun stopAlarmService() {
         val stopIntent = Intent(this, AlarmService::class.java).apply {
             action = "STOP_ALARM"
@@ -119,6 +146,15 @@ fun AlarmRingingScreen(
 ) {
     val context = LocalContext.current
     val todos = remember { mutableStateListOf(*task.todos.toTypedArray()) }
+
+    val priorityAccent = when (task.priority) {
+        PriorityLevel.NORMAL -> Color(0xFF34D399)
+        PriorityLevel.MEDIUM -> Color(0xFF38BDF8)
+        PriorityLevel.HIGH -> Color(0xFFFBBF24)
+        PriorityLevel.CRITICAL -> Color(0xFFF87171)
+    }
+
+    val timeFormatter = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
 
     // Challenge for HIGH priority
     val numA = remember { Random.nextInt(12, 39) }
@@ -165,64 +201,160 @@ fun AlarmRingingScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF090D16), Color(0xFF111827), Color(0xFF0B0F17))
+                )
+            )
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Surface(
-            color = Color(0xFFC62828),
-            shape = RoundedCornerShape(8.dp)
+        // Top Header: Brand + Priority Pill + Live Time
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
         ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TatkshanaBrandBadge(sizeDp = 36)
+                Spacer(modifier = Modifier.width(10.dp))
+                Surface(
+                    color = priorityAccent.copy(alpha = 0.16f),
+                    shape = CircleShape,
+                    modifier = Modifier.border(1.dp, priorityAccent.copy(alpha = 0.45f), CircleShape)
+                ) {
+                    Text(
+                        text = task.priority.label.uppercase(),
+                        color = priorityAccent,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
             Text(
-                text = "TATKSHANA • ${task.priority.label.uppercase()}",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                text = timeFormatter.format(Date()),
+                color = Color(0xFF94A3B8),
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp
             )
         }
 
-        Text(
-            text = task.title,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold
-        )
+        // Hero Alarm Card
+        Card(
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF161F31)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, priorityAccent.copy(alpha = 0.35f), RoundedCornerShape(22.dp))
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text(
+                    text = "ACTIVE ALARM",
+                    color = priorityAccent,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = task.title,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Stop Rule: ${task.priority.dismissalRule}",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+                Text(
+                    text = "Tip: Press Volume Up / Down to silence sound (vibration stays active)",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
 
         // Heavy Detailed Notes Display
         if (task.notes.isNotBlank()) {
-            Box(
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141C2B)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-                    .padding(14.dp)
+                    .border(1.dp, Color(0xFF283548), RoundedCornerShape(18.dp))
             ) {
-                Column {
-                    Text("TASK NOTES", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(task.notes, fontSize = 15.sp)
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "TASK NOTES",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = Color(0xFF38BDF8),
+                        letterSpacing = 0.8.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = task.notes,
+                        fontSize = 15.sp,
+                        color = Color(0xFFE2E8F0)
+                    )
                 }
             }
         }
 
         // Interactive To-Do Checklist
         if (todos.isNotEmpty()) {
-            Text("Complete Checklist Items:", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            todos.forEachIndexed { index, item ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            todos[index] = item.copy(isDone = !item.isDone)
-                        }
-                        .padding(vertical = 4.dp)
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141C2B)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF283548), RoundedCornerShape(18.dp))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Checkbox(
-                        checked = item.isDone,
-                        onCheckedChange = { checked ->
-                            todos[index] = item.copy(isDone = checked)
-                        }
+                    Text(
+                        text = "CHECKLIST (${todos.count { it.isDone }}/${todos.size})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFFF8FAFC)
                     )
-                    Text(text = item.text, fontSize = 16.sp)
+                    todos.forEachIndexed { index, item ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    todos[index] = item.copy(isDone = !item.isDone)
+                                }
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Checkbox(
+                                checked = item.isDone,
+                                onCheckedChange = { checked ->
+                                    todos[index] = item.copy(isDone = checked)
+                                },
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = Color(0xFF34D399),
+                                    uncheckedColor = Color(0xFF64748B)
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = item.text,
+                                fontSize = 15.sp,
+                                color = if (item.isDone) Color(0xFF64748B) else Color(0xFFF1F5F9)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -230,112 +362,197 @@ fun AlarmRingingScreen(
         // Priority Enforcement Gates
         when (task.priority) {
             PriorityLevel.HIGH -> {
-                Text(
-                    text = "High Priority Verification: Solve $numA + $numB",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFEF6C00)
-                )
-                OutlinedTextField(
-                    value = mathAnswer,
-                    onValueChange = { mathAnswer = it },
-                    label = { Text("Enter Answer") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1A11)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFFFBBF24).copy(alpha = 0.4f), RoundedCornerShape(18.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "HIGH PRIORITY VERIFICATION",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = Color(0xFFFBBF24)
+                        )
+                        Text(
+                            text = "Solve $numA + $numB to unlock dismiss",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        OutlinedTextField(
+                            value = mathAnswer,
+                            onValueChange = { mathAnswer = it },
+                            label = { Text("Enter Answer") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
 
             PriorityLevel.CRITICAL -> {
-                Text(
-                    text = "Critical Task: Upload Live Photo Proof & Grade Completion",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFC62828)
-                )
-
-                Button(
-                    onClick = {
-                        val hasCam = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.CAMERA
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (hasCam) {
-                            cameraLauncher.launch(null)
-                        } else {
-                            permissionLauncher.launch(Manifest.permission.CAMERA)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF211216)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFFF87171).copy(alpha = 0.4f), RoundedCornerShape(18.dp))
                 ) {
-                    Text(if (proofBitmap == null) "Capture Proof Photo" else "Retake Proof Photo")
-                }
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "CRITICAL PROOF & GRADING",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = Color(0xFFF87171)
+                        )
 
-                proofBitmap?.let { bmp ->
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Proof Photo",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                    )
-                }
+                        Button(
+                            onClick = {
+                                val hasCam = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.CAMERA
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasCam) {
+                                    cameraLauncher.launch(null)
+                                } else {
+                                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF38BDF8),
+                                contentColor = Color(0xFF06131C)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = if (proofBitmap == null) "Capture Proof Photo" else "Retake Proof Photo",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
 
-                Text("Grade Your Task Completion:", fontWeight = FontWeight.SemiBold)
-                grades.forEach { grade ->
-                    FilterChip(
-                        selected = selectedGrade == grade,
-                        onClick = { selectedGrade = grade },
-                        label = { Text(grade) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        proofBitmap?.let { bmp ->
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "Proof Photo",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(210.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                            )
+                        }
+
+                        Text(
+                            text = "Grade Your Task Completion",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = Color(0xFFF1F5F9)
+                        )
+                        grades.forEach { grade ->
+                            FilterChip(
+                                selected = selectedGrade == grade,
+                                onClick = { selectedGrade = grade },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFF87171).copy(alpha = 0.22f),
+                                    selectedLabelColor = Color(0xFFF8FAFC)
+                                ),
+                                label = { Text(grade) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
                 }
             }
 
             else -> Unit
         }
 
-        // Dismiss Button (Locked until priority requirement met)
+        // Primary Dismiss Button (Locked until priority requirement met)
         Button(
             onClick = {
                 val finalGrade = if (task.priority == PriorityLevel.CRITICAL) selectedGrade else null
                 onCompleteAndStop(todos.toList(), finalGrade)
             },
             enabled = canDismiss,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF22C55E),
+                contentColor = Color(0xFF052E16),
+                disabledContainerColor = Color(0xFF1E293B),
+                disabledContentColor = Color(0xFF64748B)
+            ),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .height(58.dp)
         ) {
             Text(
                 text = if (canDismiss) "STOP ALARM & MARK COMPLETE" else "COMPLETE REQUIREMENTS ABOVE TO STOP",
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 14.sp
             )
         }
 
-        // Flexible Snooze Controls
-        Text("Snooze Alarm:", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(snoozePresets) { (label, mins) ->
-                OutlinedButton(onClick = { onSnooze(mins) }) {
-                    Text(label)
-                }
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Snooze Section
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF141C2B)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF283548), RoundedCornerShape(18.dp))
         ) {
-            OutlinedTextField(
-                value = customSnoozeInput,
-                onValueChange = { customSnoozeInput = it },
-                label = { Text("Custom Mins") },
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(
-                onClick = {
-                    val mins = customSnoozeInput.toIntOrNull()?.coerceAtLeast(1) ?: 5
-                    onSnooze(mins)
-                }
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Snooze Custom")
+                Text(
+                    text = "SNOOZE ALARM",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(snoozePresets) { (label, mins) ->
+                        OutlinedButton(
+                            onClick = { onSnooze(mins) },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(label, color = Color(0xFFF1F5F9))
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = customSnoozeInput,
+                        onValueChange = { customSnoozeInput = it },
+                        label = { Text("Custom Mins") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val mins = customSnoozeInput.toIntOrNull()?.coerceAtLeast(1) ?: 5
+                            onSnooze(mins)
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Snooze Custom", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }

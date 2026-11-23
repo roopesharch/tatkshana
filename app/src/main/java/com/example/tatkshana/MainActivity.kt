@@ -1,26 +1,37 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import android.Manifest
 import android.app.AlarmManager
 import android.app.DatePickerDialog
-import android.app.TimePickerDialog
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.exponentialDecay
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +40,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -71,28 +83,43 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private val TatkshanaDarkScheme = darkColorScheme(
     primary = Color(0xFF38BDF8),
@@ -107,6 +134,57 @@ private val TatkshanaDarkScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFF94A3B8)
 )
 
+private data class PermissionGateItem(
+    val title: String,
+    val description: String,
+    val isGranted: Boolean,
+    val onRequest: () -> Unit
+)
+
+object AlarmLifecycleController {
+    const val ACTION_TASKS_UPDATED = "com.roopesh.tatkshana.ACTION_TASKS_UPDATED"
+    const val ACTION_MUTE_SOUND_KEEP_VIBRATION = "com.roopesh.tatkshana.ACTION_MUTE_SOUND_KEEP_VIBRATION"
+    const val EXTRA_TASK_ID = "TASK_ID"
+
+    /**
+     * Marks a task inactive after dismissal when it is a ONE_TIME alarm
+     * or when no future trigger exists. Returns the updated task list.
+     */
+    fun onAlarmDismissed(context: Context, taskId: String): List<ReminderTask> {
+        val current = TaskStorage.loadTasks(context)
+        val updated = current.map { item ->
+            if (item.id != taskId) {
+                item
+            } else {
+                val nextTrigger = AlarmScheduler.computeNextTriggerMillis(item)
+                if (item.scheduleType == ScheduleType.ONE_TIME || nextTrigger == null) {
+                    item.copy(isEnabled = false)
+                } else {
+                    item.copy(triggerTimeMillis = nextTrigger, isEnabled = true)
+                }
+            }
+        }
+        TaskStorage.saveTasks(context, updated)
+        AlarmScheduler.cancelTask(context, taskId)
+        updated.firstOrNull { it.id == taskId && it.isEnabled }?.let { activeRecurring ->
+            AlarmScheduler.scheduleTask(context, activeRecurring)
+        }
+        context.sendBroadcast(Intent(ACTION_TASKS_UPDATED).setPackage(context.packageName))
+        return updated
+    }
+
+    /**
+     * Sends a mute-sound command while keeping vibration running until dismissed/snoozed.
+     */
+    fun muteSoundKeepVibration(context: Context, taskId: String? = null) {
+        val intent = Intent(ACTION_MUTE_SOUND_KEEP_VIBRATION).apply {
+            setPackage(context.packageName)
+            if (taskId != null) putExtra(EXTRA_TASK_ID, taskId)
+        }
+        context.sendBroadcast(intent)
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,6 +198,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+        ) {
+            AlarmLifecycleController.muteSoundKeepVibration(this)
+        }
+        return super.dispatchKeyEvent(event)
     }
 }
 
@@ -159,37 +246,671 @@ fun TatkshanaBrandBadge(sizeDp: Int = 42) {
     }
 }
 
+@Composable
+private fun PermissionGateScreen(
+    items: List<PermissionGateItem>,
+    allGranted: Boolean,
+    onRequestRuntimeBatch: () -> Unit,
+    onProceed: () -> Unit
+) {
+    val grantedCount = items.count { it.isGranted }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF0B0F17), Color(0xFF101827))
+                )
+            )
+            .padding(20.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TatkshanaBrandBadge(sizeDp = 46)
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = "Permissions Required",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Text(
+                    text = "Allow these permissions to use Tatkshana ($grantedCount/${items.size} granted)",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Button(
+            onClick = onRequestRuntimeBatch,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF38BDF8),
+                contentColor = Color(0xFF06131C)
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Allow App Permissions (Notifications, Sound, Camera)",
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items.forEach { item ->
+                val statusColor = if (item.isGranted) Color(0xFF34D399) else Color(0xFFF87171)
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2234)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, statusColor.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.title,
+                                color = Color(0xFFF8FAFC),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = item.description,
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            Text(
+                                text = if (item.isGranted) "Allowed" else "Required",
+                                color = statusColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        if (!item.isGranted) {
+                            OutlinedButton(
+                                onClick = item.onRequest,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Allow", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(
+            onClick = onProceed,
+            enabled = allGranted,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF34D399),
+                contentColor = Color(0xFF052E16),
+                disabledContainerColor = Color(0xFF1E293B),
+                disabledContentColor = Color(0xFF64748B)
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+        ) {
+            Text(
+                text = if (allGranted) "PROCEED TO TATKSHANA" else "ALLOW ALL REQUIRED PERMISSIONS TO PROCEED",
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 13.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun FreeSpinWheel(
+    label: String,
+    items: List<String>,
+    selectedIndex: Int,
+    accent: Color,
+    onSelectedIndexChange: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val count = items.size
+    if (count == 0) return
+
+    val safeIndex = ((selectedIndex % count) + count) % count
+    val rowHeight = 36.dp
+    val rowPx = with(LocalDensity.current) { rowHeight.toPx() }
+    val totalHeight = rowHeight * 5
+    val scope = rememberCoroutineScope()
+
+    val wheelPos = remember { Animatable(0f) }
+
+    LaunchedEffect(safeIndex) {
+        if (!wheelPos.isRunning) {
+            wheelPos.snapTo(0f)
+        }
+    }
+
+    fun modIdx(raw: Int): Int = ((raw % count) + count) % count
+
+    suspend fun settleToNearest(currentDeltaItems: Float) {
+        val roundedSteps = currentDeltaItems.roundToInt()
+        val targetDelta = roundedSteps.toFloat()
+        wheelPos.animateTo(
+            targetValue = targetDelta,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+        val finalIndex = modIdx(safeIndex + roundedSteps)
+        wheelPos.snapTo(0f)
+        if (finalIndex != safeIndex) {
+            onSelectedIndexChange(finalIndex)
+        }
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF475569)
+        )
+
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(totalHeight)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFFEEF2F6))
+                .border(1.dp, Color(0xFFCBD5E1), RoundedCornerShape(16.dp))
+                .pointerInput(count, safeIndex) {
+                    val velocityTracker = VelocityTracker()
+                    detectDragGestures(
+                        onDragStart = {
+                            velocityTracker.resetTracking()
+                            scope.launch { wheelPos.stop() }
+                        },
+                        onDragEnd = {
+                            val velItemsPerSec = velocityTracker.calculateVelocity().y / rowPx
+                            val initialItemVel = -velItemsPerSec * 0.45f
+                            scope.launch {
+                                if (abs(initialItemVel) > 0.6f) {
+                                    val decayResult = wheelPos.animateDecay(
+                                        initialVelocity = initialItemVel,
+                                        animationSpec = exponentialDecay(
+                                            frictionMultiplier = 1.15f,
+                                            absVelocityThreshold = 0.1f
+                                        )
+                                    )
+                                    settleToNearest(decayResult.endState.value)
+                                } else {
+                                    settleToNearest(wheelPos.value)
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch { settleToNearest(wheelPos.value) }
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            velocityTracker.addPosition(change.uptimeMillis, change.position)
+                            val deltaItems = -dragAmount.y / rowPx
+                            scope.launch {
+                                wheelPos.snapTo(wheelPos.value + deltaItems)
+                            }
+                        }
+                    )
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(rowHeight)
+                    .padding(horizontal = 6.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(Color.White)
+                    .border(1.5.dp, accent, RoundedCornerShape(11.dp))
+            )
+
+            val centerFloat = safeIndex.toFloat() + wheelPos.value
+            val centerNearest = centerFloat.roundToInt()
+
+            for (offset in -2..2) {
+                val itemIdx = modIdx(centerNearest + offset)
+                val exactPos = (centerNearest + offset).toFloat() - centerFloat
+                val yPx = exactPos * rowPx
+                val distFromCenter = abs(exactPos)
+
+                val textColor = when {
+                    distFromCenter < 0.55f -> Color(0xFF0F172A)
+                    distFromCenter < 1.5f -> Color(0xFF475569)
+                    else -> Color(0xFF94A3B8)
+                }
+                val textSize = when {
+                    distFromCenter < 0.55f -> 20.sp
+                    distFromCenter < 1.5f -> 15.sp
+                    else -> 12.sp
+                }
+                val fontWeight = if (distFromCenter < 0.55f) FontWeight.ExtraBold else FontWeight.Medium
+
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .offset { IntOffset(0, yPx.roundToInt()) }
+                        .fillMaxWidth()
+                        .height(rowHeight)
+                        .clickable {
+                            val stepDiff = (centerNearest + offset) - safeIndex
+                            scope.launch {
+                                val target = stepDiff.toFloat()
+                                wheelPos.animateTo(
+                                    targetValue = target,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                )
+                                val nextIdx = modIdx(safeIndex + stepDiff)
+                                wheelPos.snapTo(0f)
+                                onSelectedIndexChange(nextIdx)
+                            }
+                        }
+                ) {
+                    Text(
+                        text = items[itemIdx],
+                        fontSize = textSize,
+                        fontWeight = fontWeight,
+                        color = textColor
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WallClockDisplay(
+    hour24: Int,
+    minute: Int,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(148.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(2.dp, Color(0xFFCBD5E1), CircleShape)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val radius = size.minDimension / 2f - 10f
+
+                drawCircle(
+                    color = Color(0xFFF1F5F9),
+                    radius = radius,
+                    center = center
+                )
+                drawCircle(
+                    color = Color(0xFFCBD5E1),
+                    radius = radius,
+                    center = center,
+                    style = Stroke(width = 2f)
+                )
+
+                for (h in 0 until 12) {
+                    val rad = (h * 30.0 - 90.0) * PI / 180.0
+                    val isCardinal = h % 3 == 0
+                    val inner = if (isCardinal) radius - 12f else radius - 7f
+                    drawLine(
+                        color = if (isCardinal) Color(0xFF0F172A) else Color(0xFF94A3B8),
+                        start = Offset(
+                            center.x + (inner * cos(rad)).toFloat(),
+                            center.y + (inner * sin(rad)).toFloat()
+                        ),
+                        end = Offset(
+                            center.x + (radius * cos(rad)).toFloat(),
+                            center.y + (radius * sin(rad)).toFloat()
+                        ),
+                        strokeWidth = if (isCardinal) 3f else 1.8f,
+                        cap = StrokeCap.Round
+                    )
+                }
+
+                val hourVal = (hour24 % 12) + (minute / 60f)
+                val hourRad = (hourVal * 30.0 - 90.0) * PI / 180.0
+                val hourEnd = Offset(
+                    center.x + (radius * 0.50f * cos(hourRad)).toFloat(),
+                    center.y + (radius * 0.50f * sin(hourRad)).toFloat()
+                )
+                drawLine(
+                    color = Color(0xFFD97706),
+                    start = center,
+                    end = hourEnd,
+                    strokeWidth = 7f,
+                    cap = StrokeCap.Round
+                )
+
+                val minRad = (minute * 6.0 - 90.0) * PI / 180.0
+                val minEnd = Offset(
+                    center.x + (radius * 0.78f * cos(minRad)).toFloat(),
+                    center.y + (radius * 0.78f * sin(minRad)).toFloat()
+                )
+                drawLine(
+                    color = Color(0xFF0284C7),
+                    start = center,
+                    end = minEnd,
+                    strokeWidth = 5f,
+                    cap = StrokeCap.Round
+                )
+
+                drawCircle(color = Color(0xFF0F172A), radius = 5.5f, center = center)
+            }
+        }
+
+        Text(
+            text = "Wall Clock Preview",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF64748B)
+        )
+    }
+}
+
+@Composable
+private fun FreshTimePickerSheet(
+    initialHour24: Int,
+    initialMinute: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int, Int) -> Unit
+) {
+    var hour24 by remember { mutableIntStateOf(initialHour24.coerceIn(0, 23)) }
+    var minute by remember { mutableIntStateOf(initialMinute.coerceIn(0, 59)) }
+
+    val isPm = hour24 >= 12
+    val hour12 = when {
+        hour24 == 0 -> 12
+        hour24 > 12 -> hour24 - 12
+        else -> hour24
+    }
+
+    val hourItems = remember { (1..12).map { String.format(Locale.getDefault(), "%02d", it) } }
+    val minuteItems = remember { (0..59).map { String.format(Locale.getDefault(), "%02d", it) } }
+
+    fun apply12Hour(h12: Int, pm: Boolean) {
+        hour24 = if (pm) {
+            if (h12 == 12) 12 else h12 + 12
+        } else {
+            if (h12 == 12) 0 else h12
+        }
+    }
+
+    val formattedTime = remember(hour24, minute) {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour24)
+            set(Calendar.MINUTE, minute)
+        }
+        SimpleDateFormat("hh:mm a", Locale.getDefault()).format(cal.time)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, Color(0xFFCBD5E1), RoundedCornerShape(24.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column {
+                        Text(
+                            text = "Pick Alarm Time",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Slide wheels freely to set time",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
+
+                    Surface(
+                        color = Color(0xFF0F172A),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = formattedTime,
+                            color = Color(0xFF38BDF8),
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    FreeSpinWheel(
+                        label = "HOUR",
+                        items = hourItems,
+                        selectedIndex = (hour12 - 1).coerceIn(0, 11),
+                        accent = Color(0xFFD97706),
+                        onSelectedIndexChange = { idx -> apply12Hour(idx + 1, isPm) },
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Text(
+                        text = ":",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFF0F172A),
+                        modifier = Modifier.padding(top = 16.dp)
+                    )
+
+                    FreeSpinWheel(
+                        label = "MINUTE",
+                        items = minuteItems,
+                        selectedIndex = minute.coerceIn(0, 59),
+                        accent = Color(0xFF0284C7),
+                        onSelectedIndexChange = { idx -> minute = idx },
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 16.dp)
+                    ) {
+                        FilterChip(
+                            selected = !isPm,
+                            onClick = { apply12Hour(hour12, false) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = Color(0xFFEEF2F6),
+                                labelColor = Color(0xFF334155),
+                                selectedContainerColor = Color(0xFF0F172A),
+                                selectedLabelColor = Color.White
+                            ),
+                            label = { Text("AM", fontWeight = FontWeight.Bold) }
+                        )
+                        FilterChip(
+                            selected = isPm,
+                            onClick = { apply12Hour(hour12, true) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = Color(0xFFEEF2F6),
+                                labelColor = Color(0xFF334155),
+                                selectedContainerColor = Color(0xFF0F172A),
+                                selectedLabelColor = Color.White
+                            ),
+                            label = { Text("PM", fontWeight = FontWeight.Bold) }
+                        )
+                    }
+                }
+
+                WallClockDisplay(
+                    hour24 = hour24,
+                    minute = minute,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Cancel", color = Color(0xFF475569), fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        onClick = { onConfirm(hour24, minute) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF0F172A),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Done", fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TatkshanaApp() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var canExactAlarm by remember { mutableStateOf(true) }
-    var canOverlay by remember { mutableStateOf(true) }
-
-    fun refreshPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmMgr = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            canExactAlarm = alarmMgr.canScheduleExactAlarms()
-        }
-        canOverlay = Settings.canDrawOverlays(context)
+    val audioPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_AUDIO
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
-    val notifPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { }
+    var canPostNotifications by remember { mutableStateOf(true) }
+    var canExactAlarm by remember { mutableStateOf(true) }
+    var canOverlay by remember { mutableStateOf(true) }
+    var canAudioStorage by remember { mutableStateOf(true) }
+    var canCamera by remember { mutableStateOf(true) }
+    var hasPromptedOnLaunch by remember { mutableStateOf(false) }
+
+    fun refreshPermissions() {
+        canPostNotifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
+        canExactAlarm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmMgr = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmMgr.canScheduleExactAlarms()
+        } else {
+            true
+        }
+
+        canOverlay = Settings.canDrawOverlays(context)
+
+        canAudioStorage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                audioPermission
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+
+        canCamera = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    val multiPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        refreshPermissions()
+    }
+
+    fun requestRuntimePermissions() {
+        val needed = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !canPostNotifications) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (!canAudioStorage) {
+                add(audioPermission)
+            }
+            if (!canCamera) {
+                add(Manifest.permission.CAMERA)
+            }
+        }
+        if (needed.isNotEmpty()) {
+            multiPermissionLauncher.launch(needed.toTypedArray())
+        } else {
+            refreshPermissions()
+        }
+    }
 
     LaunchedEffect(Unit) {
         refreshPermissions()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        if (!hasPromptedOnLaunch) {
+            hasPromptedOnLaunch = true
+            requestRuntimePermissions()
         }
     }
 
@@ -203,6 +924,72 @@ fun TatkshanaApp() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val allRequiredPermissionsGranted =
+        canPostNotifications && canExactAlarm && canOverlay && canAudioStorage && canCamera
+
+    var permissionGatePassed by remember { mutableStateOf(false) }
+
+    val permissionItems = listOf(
+        PermissionGateItem(
+            title = "Notifications",
+            description = "Show alarm notifications and background alerts",
+            isGranted = canPostNotifications,
+            onRequest = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    multiPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                }
+            }
+        ),
+        PermissionGateItem(
+            title = "Exact Alarms",
+            description = "Trigger reminders and recurring alarms at exact times",
+            isGranted = canExactAlarm,
+            onRequest = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+                }
+            }
+        ),
+        PermissionGateItem(
+            title = "Display Over Other Apps",
+            description = "Display ringing alarms above other apps",
+            isGranted = canOverlay,
+            onRequest = {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:${context.packageName}")
+                )
+                context.startActivity(intent)
+            }
+        ),
+        PermissionGateItem(
+            title = "Storage Sound / Audio",
+            description = "Pick and play custom MP3 / audio ringtones from storage",
+            isGranted = canAudioStorage,
+            onRequest = {
+                multiPermissionLauncher.launch(arrayOf(audioPermission))
+            }
+        ),
+        PermissionGateItem(
+            title = "Camera",
+            description = "Capture photo proof for Critical priority tasks",
+            isGranted = canCamera,
+            onRequest = {
+                multiPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+            }
+        )
+    )
+
+    if (!permissionGatePassed && !allRequiredPermissionsGranted) {
+        PermissionGateScreen(
+            items = permissionItems,
+            allGranted = allRequiredPermissionsGranted,
+            onRequestRuntimeBatch = { requestRuntimePermissions() },
+            onProceed = { permissionGatePassed = true }
+        )
+        return
+    }
+
     val tasks = remember {
         mutableStateListOf<ReminderTask>().apply {
             addAll(TaskStorage.loadTasks(context))
@@ -213,6 +1000,32 @@ fun TatkshanaApp() {
         tasks.clear()
         tasks.addAll(updatedList)
         TaskStorage.saveTasks(context, updatedList)
+    }
+
+    // Keep list synced when an alarm is dismissed or updated in background/service
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == AlarmLifecycleController.ACTION_TASKS_UPDATED) {
+                    val fresh = TaskStorage.loadTasks(context)
+                    tasks.clear()
+                    tasks.addAll(fresh)
+                }
+            }
+        }
+        val filter = IntentFilter(AlarmLifecycleController.ACTION_TASKS_UPDATED)
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose {
+            try {
+                context.unregisterReceiver(receiver)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     var isFormOpen by remember { mutableStateOf(false) }
@@ -685,6 +1498,28 @@ fun ReminderFormScreen(
     var pickedDay by remember { mutableIntStateOf(initialCal.get(Calendar.DAY_OF_MONTH)) }
     var pickedHour by remember { mutableIntStateOf(initialCal.get(Calendar.HOUR_OF_DAY)) }
     var pickedMinute by remember { mutableIntStateOf(initialCal.get(Calendar.MINUTE)) }
+    var showTimePickerDialog by remember { mutableStateOf(false) }
+
+    val formattedPickedTime = remember(pickedHour, pickedMinute) {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, pickedHour)
+            set(Calendar.MINUTE, pickedMinute)
+        }
+        SimpleDateFormat("hh:mm a", Locale.getDefault()).format(cal.time)
+    }
+
+    if (showTimePickerDialog) {
+        FreshTimePickerSheet(
+            initialHour24 = pickedHour,
+            initialMinute = pickedMinute,
+            onDismiss = { showTimePickerDialog = false },
+            onConfirm = { h, min ->
+                pickedHour = h
+                pickedMinute = min
+                showTimePickerDialog = false
+            }
+        )
+    }
 
     var intervalHours by remember { mutableStateOf((existingTask?.intervalHours ?: 1).toString()) }
     var durationDays by remember { mutableStateOf((existingTask?.durationDays ?: 30).toString()) }
@@ -709,6 +1544,67 @@ fun ReminderFormScreen(
     }
     var soundDropdownExpanded by remember { mutableStateOf(false) }
 
+    var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var isPreviewPlaying by remember { mutableStateOf(false) }
+
+    fun stopPreviewSound() {
+        try {
+            previewPlayer?.stop()
+            previewPlayer?.release()
+        } catch (_: Exception) {
+        }
+        previewPlayer = null
+        isPreviewPlaying = false
+    }
+
+    fun playPreviewSound(source: String, bundledName: String, customUriString: String?) {
+        stopPreviewSound()
+
+        val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+        val bundledUri = BundledRingtones.resolveUri(context, bundledName)
+        val uriToPlay: Uri = when (source) {
+            "STORAGE" -> if (!customUriString.isNullOrBlank()) Uri.parse(customUriString) else (bundledUri ?: defaultUri)
+            "BUNDLED" -> bundledUri ?: defaultUri
+            else -> defaultUri
+        } ?: return
+
+        try {
+            val player = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                setDataSource(context, uriToPlay)
+                isLooping = false
+                setOnCompletionListener {
+                    stopPreviewSound()
+                }
+                prepare()
+                start()
+            }
+            previewPlayer = player
+            isPreviewPlaying = true
+        } catch (_: Exception) {
+            Toast.makeText(
+                context,
+                "Unable to preview this sound track (missing raw file or audio format)",
+                Toast.LENGTH_SHORT
+            ).show()
+            stopPreviewSound()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            stopPreviewSound()
+        }
+    }
+
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -720,8 +1616,8 @@ fun ReminderFormScreen(
                 )
             } catch (_: Exception) {
             }
-            ringtoneSource = "STORAGE"
-            audioUri = uri.toString()
+            val newSource = "STORAGE"
+            val newUriString = uri.toString()
             var name = "Custom Storage Audio"
             context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -729,7 +1625,10 @@ fun ReminderFormScreen(
                     name = cursor.getString(nameIndex)
                 }
             }
+            ringtoneSource = newSource
+            audioUri = newUriString
             audioFileName = name
+            playPreviewSound(newSource, selectedBundledRes, newUriString)
         }
     }
 
@@ -745,6 +1644,7 @@ fun ReminderFormScreen(
     }
 
     fun submitForm() {
+        stopPreviewSound()
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) {
             Toast.makeText(context, "Please enter a Reminder Title first", Toast.LENGTH_SHORT).show()
@@ -819,7 +1719,12 @@ fun ReminderFormScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            stopPreviewSound()
+                            onBack()
+                        }
+                    ) {
                         Text("←", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                     }
                 },
@@ -908,21 +1813,10 @@ fun ReminderFormScreen(
                         }
 
                         OutlinedButton(
-                            onClick = {
-                                TimePickerDialog(
-                                    context,
-                                    { _, h, min ->
-                                        pickedHour = h
-                                        pickedMinute = min
-                                    },
-                                    pickedHour,
-                                    pickedMinute,
-                                    false
-                                ).show()
-                            },
+                            onClick = { showTimePickerDialog = true },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(String.format(Locale.getDefault(), "Time: %02d:%02d", pickedHour, pickedMinute))
+                            Text("Time: $formattedPickedTime")
                         }
                     }
                 }
@@ -972,21 +1866,10 @@ fun ReminderFormScreen(
                         }
                     }
                     OutlinedButton(
-                        onClick = {
-                            TimePickerDialog(
-                                context,
-                                { _, h, min ->
-                                    pickedHour = h
-                                    pickedMinute = min
-                                },
-                                pickedHour,
-                                pickedMinute,
-                                false
-                            ).show()
-                        },
+                        onClick = { showTimePickerDialog = true },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(String.format(Locale.getDefault(), "Alarm Time: %02d:%02d", pickedHour, pickedMinute))
+                        Text("Alarm Time: $formattedPickedTime")
                     }
                 }
             }
@@ -997,6 +1880,7 @@ fun ReminderFormScreen(
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF34D399)
             )
+
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = { soundDropdownExpanded = true },
@@ -1009,10 +1893,11 @@ fun ReminderFormScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = audioFileName,
+                            text = if (isPreviewPlaying) "♪ $audioFileName (Playing)" else audioFileName,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            color = Color(0xFFF8FAFC),
+                            color = if (isPreviewPlaying) Color(0xFF34D399) else Color(0xFFF8FAFC),
+                            fontWeight = if (isPreviewPlaying) FontWeight.SemiBold else FontWeight.Normal,
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -1025,7 +1910,6 @@ fun ReminderFormScreen(
                     onDismissRequest = { soundDropdownExpanded = false },
                     modifier = Modifier.background(Color(0xFF1A2234))
                 ) {
-                    // First option: Select from Device
                     DropdownMenuItem(
                         text = {
                             Text(
@@ -1036,11 +1920,11 @@ fun ReminderFormScreen(
                         },
                         onClick = {
                             soundDropdownExpanded = false
+                            stopPreviewSound()
                             audioPickerLauncher.launch(arrayOf("audio/*"))
                         }
                     )
 
-                    // Built-in ringtone tracks from res/raw
                     bundledRingtones.forEach { track ->
                         DropdownMenuItem(
                             text = {
@@ -1054,6 +1938,7 @@ fun ReminderFormScreen(
                                 ringtoneSource = "BUNDLED"
                                 selectedBundledRes = track.rawResName
                                 audioFileName = track.displayName
+                                playPreviewSound("BUNDLED", track.rawResName, audioUri)
                             }
                         )
                     }
@@ -1069,7 +1954,28 @@ fun ReminderFormScreen(
                             soundDropdownExpanded = false
                             ringtoneSource = "SYSTEM"
                             audioFileName = "System Default Alarm"
+                            playPreviewSound("SYSTEM", selectedBundledRes, audioUri)
                         }
+                    )
+                }
+            }
+
+            if (isPreviewPlaying) {
+                Button(
+                    onClick = { stopPreviewSound() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFEF4444),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                ) {
+                    Text(
+                        text = "■  STOP PREVIEW SOUND",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
                     )
                 }
             }
@@ -1142,7 +2048,6 @@ fun ReminderFormScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // Dedicated Bottom Save Button for effortless saving after filling details
             Button(
                 onClick = { submitForm() },
                 colors = ButtonDefaults.buttonColors(

@@ -1,4 +1,4 @@
-package com.example.tatkshana.ui.theme
+package com.roopesh.tatkshana.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

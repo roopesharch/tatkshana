@@ -1,4 +1,4 @@
-package com.example.tatkshana.ui.theme
+package com.roopesh.tatkshana.ui.theme
 
 import android.app.Activity
 import android.os.Build

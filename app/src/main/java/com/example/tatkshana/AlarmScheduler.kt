@@ -1,4 +1,4 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import android.app.AlarmManager
 import android.app.PendingIntent

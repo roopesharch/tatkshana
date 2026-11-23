@@ -1,4 +1,4 @@
-package com.example.tatkshana
+package com.roopesh.tatkshana
 
 import org.junit.Test
 
