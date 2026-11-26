@@ -174,14 +174,18 @@ object AlarmLifecycleController {
     }
 
     /**
-     * Sends a mute-sound command while keeping vibration running until dismissed/snoozed.
+     * Sends a mute-sound command to AlarmService while keeping vibration running
+     * according to the active alarm's priority rules.
      */
     fun muteSoundKeepVibration(context: Context, taskId: String? = null) {
-        val intent = Intent(ACTION_MUTE_SOUND_KEEP_VIBRATION).apply {
-            setPackage(context.packageName)
+        val serviceIntent = Intent(context, AlarmService::class.java).apply {
+            action = "MUTE_SOUND_KEEP_VIBRATION"
             if (taskId != null) putExtra(EXTRA_TASK_ID, taskId)
         }
-        context.sendBroadcast(intent)
+        try {
+            context.startService(serviceIntent)
+        } catch (_: Exception) {
+        }
     }
 }
 

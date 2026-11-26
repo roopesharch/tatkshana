@@ -1,11 +1,18 @@
 package com.roopesh.tatkshana
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,7 +22,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +50,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,22 +68,40 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.roopesh.tatkshana.ui.theme.TatkshanaTheme
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
 
 class AlarmRingingActivity : ComponentActivity() {
+
+    private var isScreenOffReceiverRegistered = false
+
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                muteAlarmSoundKeepVibration()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        currentInstance = WeakReference(this)
+        enableShowWhenLockedAndTurnScreenOn()
+
         val taskId = intent.getStringExtra("TASK_ID")
+        val focusSnooze = intent.getBooleanExtra("FOCUS_SNOOZE", false)
         val task = taskId?.let { TaskStorage.getTaskById(this, it) }
 
         if (task == null) {
             stopAlarmService()
-            finish()
+            closeSelfCompletely()
             return
         }
+
+        registerScreenOffReceiver()
 
         setContent {
             TatkshanaTheme {
@@ -86,10 +111,11 @@ class AlarmRingingActivity : ComponentActivity() {
                 ) {
                     AlarmRingingScreen(
                         task = task,
+                        focusSnooze = focusSnooze,
                         onSnooze = { minutes ->
                             stopAlarmService()
+                            closeSelfCompletely()
                             AlarmScheduler.snoozeTask(this, task, minutes)
-                            finish()
                         },
                         onCompleteAndStop = { updatedTodos, grade ->
                             stopAlarmService()
@@ -107,12 +133,67 @@ class AlarmRingingActivity : ComponentActivity() {
                             if (nextTime != null) {
                                 AlarmScheduler.scheduleTask(this, updatedTask, nextTime)
                             }
-                            finish()
+                            closeSelfCompletely()
                         }
                     )
                 }
             }
         }
+    }
+
+    private fun closeSelfCompletely() {
+        try {
+            finishAndRemoveTask()
+        } catch (_: Exception) {
+            finish()
+        }
+    }
+
+    private fun enableShowWhenLockedAndTurnScreenOn() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun registerScreenOffReceiver() {
+        if (isScreenOffReceiverRegistered) return
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                screenOffReceiver,
+                IntentFilter(Intent.ACTION_SCREEN_OFF),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            isScreenOffReceiverRegistered = true
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun unregisterScreenOffReceiver() {
+        if (!isScreenOffReceiverRegistered) return
+        try {
+            unregisterReceiver(screenOffReceiver)
+        } catch (_: Exception) {
+        }
+        isScreenOffReceiverRegistered = false
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                muteAlarmSoundKeepVibration()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -127,25 +208,62 @@ class AlarmRingingActivity : ComponentActivity() {
         val muteIntent = Intent(this, AlarmService::class.java).apply {
             action = "MUTE_SOUND_KEEP_VIBRATION"
         }
-        startService(muteIntent)
+        try {
+            startService(muteIntent)
+        } catch (_: Exception) {
+        }
     }
 
     private fun stopAlarmService() {
         val stopIntent = Intent(this, AlarmService::class.java).apply {
             action = "STOP_ALARM"
         }
-        startService(stopIntent)
+        try {
+            startService(stopIntent)
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onDestroy() {
+        if (currentInstance?.get() === this) {
+            currentInstance = null
+        }
+        unregisterScreenOffReceiver()
+        super.onDestroy()
+    }
+
+    companion object {
+        private var currentInstance: WeakReference<AlarmRingingActivity>? = null
+        private val mainHandler = Handler(Looper.getMainLooper())
+
+        fun closeRingingScreen() {
+            mainHandler.post {
+                currentInstance?.get()?.let { activity ->
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        activity.closeSelfCompletely()
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 fun AlarmRingingScreen(
     task: ReminderTask,
+    focusSnooze: Boolean = false,
     onSnooze: (Int) -> Unit,
     onCompleteAndStop: (List<TodoItem>, String?) -> Unit
 ) {
     val context = LocalContext.current
+    val scrollState = rememberScrollState()
     val todos = remember { mutableStateListOf(*task.todos.toTypedArray()) }
+
+    LaunchedEffect(focusSnooze) {
+        if (focusSnooze) {
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
 
     val priorityAccent = when (task.priority) {
         PriorityLevel.NORMAL -> Color(0xFF34D399)
@@ -206,7 +324,7 @@ fun AlarmRingingScreen(
                     colors = listOf(Color(0xFF090D16), Color(0xFF111827), Color(0xFF0B0F17))
                 )
             )
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -272,7 +390,11 @@ fun AlarmRingingScreen(
                     color = Color(0xFF94A3B8)
                 )
                 Text(
-                    text = "Tip: Press Volume Up / Down to silence sound (vibration stays active)",
+                    text = if (task.priority == PriorityLevel.NORMAL || task.priority == PriorityLevel.MEDIUM) {
+                        "Tip: Press Volume or Power button to mute sound (vibration stops at 30s)"
+                    } else {
+                        "Tip: Press Volume or Power button to silence sound (vibration stays active)"
+                    },
                     fontSize = 11.sp,
                     color = Color(0xFF64748B),
                     modifier = Modifier.padding(top = 4.dp)
