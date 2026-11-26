@@ -1405,17 +1405,48 @@ fun TatkshanaApp() {
     }
 
     var isFormOpen by remember { mutableStateOf(false) }
+    var isCalendarOpen by remember { mutableStateOf(false) }
     var taskBeingEdited by remember { mutableStateOf<ReminderTask?>(null) }
+    var initialTriggerMillisForNewTask by remember { mutableStateOf<Long?>(null) }
 
     val formatter = remember { SimpleDateFormat("dd MMM, hh:mm:ss a", Locale.getDefault()) }
 
-    if (isFormOpen) {
+    if (isCalendarOpen) {
+        AlarmCalendarScreen(
+            tasks = tasks.toList(),
+            onBack = { isCalendarOpen = false },
+            onEditTask = { targetTask ->
+                isCalendarOpen = false
+                initialTriggerMillisForNewTask = null
+                taskBeingEdited = targetTask
+                isFormOpen = true
+            },
+            onCreateForDate = { dayKey ->
+                val year = (dayKey / 10_000L).toInt()
+                val month = ((dayKey % 10_000L) / 100L).toInt() - 1
+                val day = (dayKey % 100L).toInt()
+                val cal = Calendar.getInstance().apply {
+                    set(Calendar.YEAR, year)
+                    set(Calendar.MONTH, month.coerceIn(0, 11))
+                    set(Calendar.DAY_OF_MONTH, day.coerceIn(1, 31))
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                isCalendarOpen = false
+                taskBeingEdited = null
+                initialTriggerMillisForNewTask = cal.timeInMillis
+                isFormOpen = true
+            }
+        )
+    } else if (isFormOpen) {
         ReminderFormScreen(
             existingTask = taskBeingEdited,
+            initialTriggerMillis = initialTriggerMillisForNewTask,
             allTasks = tasks.toList(),
             onBack = {
                 isFormOpen = false
                 taskBeingEdited = null
+                initialTriggerMillisForNewTask = null
             },
             onSave = { savedTask ->
                 val exists = tasks.any { it.id == savedTask.id }
@@ -1440,6 +1471,7 @@ fun TatkshanaApp() {
 
                 isFormOpen = false
                 taskBeingEdited = null
+                initialTriggerMillisForNewTask = null
             }
         )
     } else {
@@ -1471,20 +1503,47 @@ fun TatkshanaApp() {
                 )
             },
             floatingActionButton = {
-                FloatingActionButton(
-                    onClick = {
-                        taskBeingEdited = null
-                        isFormOpen = true
-                    },
-                    containerColor = Color(0xFF38BDF8),
-                    contentColor = Color(0xFF06131C),
-                    shape = RoundedCornerShape(14.dp)
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 32.dp)
                 ) {
-                    Text(
-                        text = "+ New",
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 14.dp)
-                    )
+                    FloatingActionButton(
+                        onClick = { isCalendarOpen = true },
+                        containerColor = Color(0xFF1A2234),
+                        contentColor = Color(0xFF38BDF8),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.border(
+                            1.dp,
+                            Color(0xFF38BDF8).copy(alpha = 0.55f),
+                            RoundedCornerShape(14.dp)
+                        )
+                    ) {
+                        Text(
+                            text = "📅 Calendar",
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 14.dp)
+                        )
+                    }
+
+                    FloatingActionButton(
+                        onClick = {
+                            taskBeingEdited = null
+                            initialTriggerMillisForNewTask = null
+                            isFormOpen = true
+                        },
+                        containerColor = Color(0xFF38BDF8),
+                        contentColor = Color(0xFF06131C),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text(
+                            text = "+ New",
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 14.dp)
+                        )
+                    }
                 }
             }
         ) { paddingValues ->
@@ -1622,6 +1681,7 @@ fun TatkshanaApp() {
                                 },
                                 onEdit = {
                                     taskBeingEdited = task
+                                    initialTriggerMillisForNewTask = null
                                     isFormOpen = true
                                 },
                                 onTestRingNow = {
@@ -1968,6 +2028,7 @@ private fun formatHourLabel(hour24: Int): String {
 @Composable
 fun ReminderFormScreen(
     existingTask: ReminderTask?,
+    initialTriggerMillis: Long? = null,
     allTasks: List<ReminderTask> = emptyList(),
     onBack: () -> Unit,
     onSave: (ReminderTask) -> Unit
@@ -2009,6 +2070,8 @@ fun ReminderFormScreen(
         Calendar.getInstance().apply {
             if (existingTask != null && existingTask.triggerTimeMillis > System.currentTimeMillis()) {
                 timeInMillis = existingTask.triggerTimeMillis
+            } else if (initialTriggerMillis != null) {
+                timeInMillis = initialTriggerMillis
             } else {
                 add(Calendar.MINUTE, 1)
             }
