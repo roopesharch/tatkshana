@@ -22,6 +22,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.exponentialDecay
@@ -146,10 +147,6 @@ object AlarmLifecycleController {
     const val ACTION_MUTE_SOUND_KEEP_VIBRATION = "com.roopesh.tatkshana.ACTION_MUTE_SOUND_KEEP_VIBRATION"
     const val EXTRA_TASK_ID = "TASK_ID"
 
-    /**
-     * Marks a task inactive after dismissal when it is a ONE_TIME alarm
-     * or when no future trigger exists. Returns the updated task list.
-     */
     fun onAlarmDismissed(context: Context, taskId: String): List<ReminderTask> {
         val current = TaskStorage.loadTasks(context)
         val updated = current.map { item ->
@@ -173,10 +170,35 @@ object AlarmLifecycleController {
         return updated
     }
 
-    /**
-     * Sends a mute-sound command to AlarmService while keeping vibration running
-     * according to the active alarm's priority rules.
-     */
+    fun completeFromPopupSilence(context: Context, taskId: String): List<ReminderTask> {
+        AlarmScheduler.cancelTask(context, taskId)
+        val current = TaskStorage.loadTasks(context)
+        val updated = current.map { item ->
+            if (item.id != taskId) {
+                item
+            } else {
+                val nextTime = if (item.scheduleType == ScheduleType.ONE_TIME) {
+                    null
+                } else {
+                    AlarmScheduler.computeNextTriggerMillis(
+                        item,
+                        System.currentTimeMillis() + 5_000L
+                    )
+                }
+                item.copy(
+                    isEnabled = nextTime != null,
+                    triggerTimeMillis = nextTime ?: item.triggerTimeMillis
+                )
+            }
+        }
+        TaskStorage.saveTasks(context, updated)
+        updated.firstOrNull { it.id == taskId && it.isEnabled }?.let { activeNext ->
+            AlarmScheduler.scheduleTask(context, activeNext, activeNext.triggerTimeMillis)
+        }
+        context.sendBroadcast(Intent(ACTION_TASKS_UPDATED).setPackage(context.packageName))
+        return updated
+    }
+
     fun muteSoundKeepVibration(context: Context, taskId: String? = null) {
         val serviceIntent = Intent(context, AlarmService::class.java).apply {
             action = "MUTE_SOUND_KEEP_VIBRATION"
@@ -910,8 +932,21 @@ fun TatkshanaApp() {
         }
     }
 
+    val tasks = remember {
+        mutableStateListOf<ReminderTask>().apply {
+            addAll(TaskStorage.loadTasks(context))
+        }
+    }
+
+    fun reloadTasksFromStorage() {
+        val fresh = TaskStorage.loadTasks(context)
+        tasks.clear()
+        tasks.addAll(fresh)
+    }
+
     LaunchedEffect(Unit) {
         refreshPermissions()
+        reloadTasksFromStorage()
         if (!hasPromptedOnLaunch) {
             hasPromptedOnLaunch = true
             requestRuntimePermissions()
@@ -922,6 +957,7 @@ fun TatkshanaApp() {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 refreshPermissions()
+                reloadTasksFromStorage()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -994,26 +1030,17 @@ fun TatkshanaApp() {
         return
     }
 
-    val tasks = remember {
-        mutableStateListOf<ReminderTask>().apply {
-            addAll(TaskStorage.loadTasks(context))
-        }
-    }
-
     fun persistAndSync(updatedList: List<ReminderTask>) {
         tasks.clear()
         tasks.addAll(updatedList)
         TaskStorage.saveTasks(context, updatedList)
     }
 
-    // Keep list synced when an alarm is dismissed or updated in background/service
     DisposableEffect(context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent?.action == AlarmLifecycleController.ACTION_TASKS_UPDATED) {
-                    val fresh = TaskStorage.loadTasks(context)
-                    tasks.clear()
-                    tasks.addAll(fresh)
+                    reloadTasksFromStorage()
                 }
             }
         }
@@ -1040,6 +1067,7 @@ fun TatkshanaApp() {
     if (isFormOpen) {
         ReminderFormScreen(
             existingTask = taskBeingEdited,
+            allTasks = tasks.toList(),
             onBack = {
                 isFormOpen = false
                 taskBeingEdited = null
@@ -1079,17 +1107,17 @@ fun TatkshanaApp() {
                     ),
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            TatkshanaBrandBadge(sizeDp = 40)
-                            Spacer(modifier = Modifier.width(12.dp))
+                            TatkshanaBrandBadge(sizeDp = 36)
+                            Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
                                     text = "Tatkshana",
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 21.sp
+                                    fontSize = 19.sp
                                 )
                                 Text(
                                     text = "Priority Alarms & Task Proof",
-                                    fontSize = 11.sp,
+                                    fontSize = 10.sp,
                                     color = Color(0xFF94A3B8)
                                 )
                             }
@@ -1105,12 +1133,12 @@ fun TatkshanaApp() {
                     },
                     containerColor = Color(0xFF38BDF8),
                     contentColor = Color(0xFF06131C),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     Text(
-                        text = "+ New Reminder",
+                        text = "+ New",
                         fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 18.dp)
+                        modifier = Modifier.padding(horizontal = 14.dp)
                     )
                 }
             }
@@ -1128,18 +1156,18 @@ fun TatkshanaApp() {
                 if (!canExactAlarm || !canOverlay) {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF2B1218)),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                            .border(1.dp, Color(0xFFF87171).copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                            .border(1.dp, Color(0xFFF87171).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                     ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
+                        Column(modifier = Modifier.padding(10.dp)) {
                             Text(
                                 text = "Enable Background Permissions for Reliable Alarms:",
                                 color = Color(0xFFFCA5A5),
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
+                                fontSize = 12.sp
                             )
                             if (!canExactAlarm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 TextButton(
@@ -1172,10 +1200,10 @@ fun TatkshanaApp() {
                 val activeCount = tasks.count { it.isEnabled }
                 val criticalCount = tasks.count { it.priority == PriorityLevel.CRITICAL }
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     SummaryPill(
                         label = "Total",
@@ -1203,17 +1231,17 @@ fun TatkshanaApp() {
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            TatkshanaBrandBadge(sizeDp = 64)
-                            Spacer(modifier = Modifier.height(12.dp))
+                            TatkshanaBrandBadge(sizeDp = 56)
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = "No reminders yet",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
+                                fontSize = 17.sp,
                                 color = Color(0xFFF1F5F9)
                             )
                             Text(
-                                text = "Tap + New Reminder to set an alarm or hourly task",
-                                fontSize = 13.sp,
+                                text = "Tap + New to set an alarm or hourly task",
+                                fontSize = 12.sp,
                                 color = Color(0xFF94A3B8),
                                 modifier = Modifier.padding(top = 4.dp)
                             )
@@ -1223,8 +1251,8 @@ fun TatkshanaApp() {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                            .padding(horizontal = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         items(tasks, key = { it.id }) { task ->
                             ReminderCard(
@@ -1263,7 +1291,7 @@ fun TatkshanaApp() {
                                 }
                             )
                         }
-                        item { Spacer(modifier = Modifier.height(84.dp)) }
+                        item { Spacer(modifier = Modifier.height(80.dp)) }
                     }
                 }
             }
@@ -1280,20 +1308,24 @@ fun SummaryPill(
 ) {
     Surface(
         color = Color(0xFF1A2234),
-        shape = RoundedCornerShape(14.dp),
-        modifier = modifier.border(1.dp, accent.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.border(1.dp, accent.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = label,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+            )
             Text(
                 text = value,
                 color = accent,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 18.sp
-            )
-            Text(
-                text = label,
-                color = Color(0xFF94A3B8),
-                fontSize = 12.sp
+                fontSize = 15.sp
             )
         }
     }
@@ -1315,44 +1347,187 @@ fun ReminderCard(
         PriorityLevel.CRITICAL -> Color(0xFFF87171)
     }
 
+    val timeOnlyFormatter = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
     val formatter = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()) }
 
+    var expandedWhenInactive by remember(task.id, task.isEnabled) { mutableStateOf(false) }
+    val showFullDetails = task.isEnabled || expandedWhenInactive
+
     Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2234)),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (task.isEnabled) Color(0xFF1A2234) else Color(0xFF141B29)
+        ),
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF334155).copy(alpha = 0.55f), RoundedCornerShape(20.dp))
+            .animateContentSize()
+            .border(
+                1.dp,
+                if (task.isEnabled) Color(0xFF334155).copy(alpha = 0.55f) else Color(0xFF263248),
+                RoundedCornerShape(16.dp)
+            )
+            .clickable(enabled = !task.isEnabled) {
+                expandedWhenInactive = !expandedWhenInactive
+            }
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 14.dp,
+                vertical = if (task.isEnabled) 14.dp else 10.dp
+            )
+        ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    color = priorityColor.copy(alpha = 0.16f),
-                    shape = CircleShape
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
                 ) {
+                    Surface(
+                        color = priorityColor.copy(alpha = 0.16f),
+                        shape = CircleShape
+                    ) {
+                        Text(
+                            text = task.priority.label.uppercase(),
+                            color = priorityColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = task.title,
+                            fontSize = if (task.isEnabled) 17.sp else 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (task.isEnabled) Color(0xFFF8FAFC) else Color(0xFFCBD5E1),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = timeOnlyFormatter.format(Date(task.triggerTimeMillis)),
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Switch(
+                    checked = task.isEnabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled) expandedWhenInactive = false
+                        onToggleEnabled(enabled)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color(0xFF06131C),
+                        checkedTrackColor = Color(0xFF38BDF8)
+                    )
+                )
+            }
+
+            if (!task.isEnabled && !expandedWhenInactive) {
+                Text(
+                    text = "Tap to expand details",
+                    color = Color(0xFF64748B),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+
+            if (showFullDetails) {
+                val scheduleDescription = when (task.scheduleType) {
+                    ScheduleType.ONE_TIME -> "Once • ${formatter.format(Date(task.triggerTimeMillis))}"
+                    ScheduleType.HOURLY_RANGE -> "Every ${task.intervalHours} hr(s) for ${task.durationDays} days • Next: ${formatter.format(Date(task.triggerTimeMillis))}"
+                    ScheduleType.RECURRING_DAYS -> "Every ${task.recurringDays.joinToString(", ")} • Next: ${formatter.format(Date(task.triggerTimeMillis))}"
+                }
+                Text(
+                    text = scheduleDescription,
+                    color = Color(0xFF38BDF8),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+
+                Text(
+                    text = "Stop Rule: ${task.priority.dismissalRule}",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+                Text(
+                    text = "Ringtone: ${task.audioFileName}  •  Snooze: ${task.snoozeMinutes}m",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+
+                if (!task.lastGrade.isNullOrBlank()) {
                     Text(
-                        text = task.priority.label.uppercase(),
-                        color = priorityColor,
+                        text = "Last Grade: ${task.lastGrade}",
+                        color = Color(0xFF34D399),
                         fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = task.isEnabled,
-                        onCheckedChange = onToggleEnabled,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color(0xFF06131C),
-                            checkedTrackColor = Color(0xFF38BDF8)
+                if (task.notes.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0F1623), RoundedCornerShape(10.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = task.notes,
+                            color = Color(0xFFE2E8F0),
+                            fontSize = 12.sp
                         )
+                    }
+                }
+
+                if (task.todos.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Checklist (${task.todos.count { it.isDone }}/${task.todos.size})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFFF1F5F9)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    task.todos.forEach { todo ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onToggleTodo(todo.id) }
+                                .padding(vertical = 1.dp)
+                        ) {
+                            Checkbox(
+                                checked = todo.isDone,
+                                onCheckedChange = { onToggleTodo(todo.id) }
+                            )
+                            Text(
+                                text = todo.text,
+                                color = if (todo.isDone) Color(0xFF64748B) else Color(0xFFF1F5F9),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                ) {
                     TextButton(onClick = onEdit) {
                         Text(
                             text = "Edit",
@@ -1368,106 +1543,14 @@ fun ReminderCard(
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = task.title,
-                fontSize = 19.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF8FAFC)
-            )
-
-            val scheduleDescription = when (task.scheduleType) {
-                ScheduleType.ONE_TIME -> "Once • ${formatter.format(Date(task.triggerTimeMillis))}"
-                ScheduleType.HOURLY_RANGE -> "Every ${task.intervalHours} hr(s) for ${task.durationDays} days • Next: ${formatter.format(Date(task.triggerTimeMillis))}"
-                ScheduleType.RECURRING_DAYS -> "Every ${task.recurringDays.joinToString(", ")} • Next: ${formatter.format(Date(task.triggerTimeMillis))}"
-            }
-            Text(
-                text = scheduleDescription,
-                color = Color(0xFF38BDF8),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-
-            Text(
-                text = "Stop Rule: ${task.priority.dismissalRule}",
-                color = Color(0xFFCBD5E1),
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Text(
-                text = "Ringtone: ${task.audioFileName}  •  Snooze: ${task.snoozeMinutes}m",
-                color = Color(0xFF94A3B8),
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 2.dp)
-            )
-
-            if (!task.lastGrade.isNullOrBlank()) {
-                Text(
-                    text = "Last Grade: ${task.lastGrade}",
-                    color = Color(0xFF34D399),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-
-            if (task.notes.isNotBlank()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF0F1623), RoundedCornerShape(12.dp))
-                        .padding(12.dp)
+                OutlinedButton(
+                    onClick = onTestRingNow,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = task.notes,
-                        color = Color(0xFFE2E8F0),
-                        fontSize = 13.sp
-                    )
+                    Text("Ring Now (Test Sound & Stop Gate)", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
-            }
-
-            if (task.todos.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = "Checklist (${task.todos.count { it.isDone }}/${task.todos.size})",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = Color(0xFFF1F5F9)
-                )
-                task.todos.forEach { todo ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onToggleTodo(todo.id) }
-                            .padding(vertical = 2.dp)
-                    ) {
-                        Checkbox(
-                            checked = todo.isDone,
-                            onCheckedChange = { onToggleTodo(todo.id) }
-                        )
-                        Text(
-                            text = todo.text,
-                            color = if (todo.isDone) Color(0xFF64748B) else Color(0xFFF1F5F9),
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-            OutlinedButton(
-                onClick = onTestRingNow,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Ring Now (Test Sound & Stop Gate)", fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -1477,6 +1560,7 @@ fun ReminderCard(
 @Composable
 fun ReminderFormScreen(
     existingTask: ReminderTask?,
+    allTasks: List<ReminderTask> = emptyList(),
     onBack: () -> Unit,
     onSave: (ReminderTask) -> Unit
 ) {
@@ -1636,7 +1720,7 @@ fun ReminderFormScreen(
         }
     }
 
-    val snoozePresets = listOf("5 mins" to 5, "15 mins" to 15, "1 hour" to 60, "Next Day" to 1440)
+    val snoozePresets = listOf("5m" to 5, "15m" to 15, "1h" to 60, "1d" to 1440)
     var selectedSnoozeMins by remember { mutableIntStateOf(existingTask?.snoozeMinutes ?: 5) }
     var customSnoozeText by remember { mutableStateOf((existingTask?.snoozeMinutes ?: 5).toString()) }
 
@@ -1646,6 +1730,12 @@ fun ReminderFormScreen(
             addAll(existingTask?.todos ?: emptyList())
         }
     }
+
+    val inactiveOtherTasks = remember(allTasks, existingTask) {
+        allTasks.filter { !it.isEnabled && it.id != existingTask?.id }
+    }
+    var expandedInactiveInEditIds by remember { mutableStateOf(setOf<String>()) }
+    val inactiveTimeFormatter = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
 
     fun submitForm() {
         stopPreviewSound()
@@ -1714,11 +1804,12 @@ fun ReminderFormScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF111827)),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TatkshanaBrandBadge(sizeDp = 32)
-                        Spacer(modifier = Modifier.width(10.dp))
+                        TatkshanaBrandBadge(sizeDp = 28)
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (existingTask == null) "New Reminder" else "Edit Reminder",
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
                         )
                     }
                 },
@@ -1729,7 +1820,7 @@ fun ReminderFormScreen(
                             onBack()
                         }
                     ) {
-                        Text("←", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                        Text("←", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                     }
                 },
                 actions = {
@@ -1741,7 +1832,7 @@ fun ReminderFormScreen(
                         ),
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        Text("SAVE", fontWeight = FontWeight.ExtraBold)
+                        Text("SAVE", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
                     }
                 }
             )
@@ -1753,90 +1844,102 @@ fun ReminderFormScreen(
                 .background(Color(0xFF0B0F17))
                 .padding(paddingValues)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("Reminder Title *") },
-                placeholder = { Text("e.g., Drink Water / Server Check / Exam Prep") },
+                label = { Text("Reminder Title *", fontSize = 12.sp) },
+                placeholder = { Text("e.g., Drink Water / Server Check", fontSize = 12.sp) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Text("1. Priority & Stop Rule", fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24))
-            PriorityLevel.entries.forEach { level ->
-                FilterChip(
-                    selected = selectedPriority == level,
-                    onClick = { selectedPriority = level },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Color(0xFF38BDF8).copy(alpha = 0.22f),
-                        selectedLabelColor = Color(0xFFF8FAFC)
-                    ),
-                    label = {
-                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                            Text(level.label, fontWeight = FontWeight.Bold)
-                            Text(level.dismissalRule, fontSize = 11.sp, color = Color(0xFFCBD5E1))
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedButton(
+                    onClick = { showTimePickerDialog = true },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Time: $formattedPickedTime", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                if (selectedSchedule == ScheduleType.ONE_TIME) {
+                    OutlinedButton(
+                        onClick = {
+                            DatePickerDialog(
+                                context,
+                                { _, y, m, d ->
+                                    pickedYear = y
+                                    pickedMonth = m
+                                    pickedDay = d
+                                },
+                                pickedYear,
+                                pickedMonth,
+                                pickedDay
+                            ).show()
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Date: $pickedDay/${pickedMonth + 1}", fontSize = 12.sp)
+                    }
+                }
             }
 
-            Text("2. Schedule Flexibility", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-            ScheduleType.entries.forEach { type ->
-                FilterChip(
-                    selected = selectedSchedule == type,
-                    onClick = { selectedSchedule = type },
-                    label = { Text(type.label) },
-                    modifier = Modifier.fillMaxWidth()
-                )
+            Text("1. Priority", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFFFBBF24))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(PriorityLevel.entries) { level ->
+                    FilterChip(
+                        selected = selectedPriority == level,
+                        onClick = { selectedPriority = level },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFF38BDF8).copy(alpha = 0.22f),
+                            selectedLabelColor = Color(0xFFF8FAFC)
+                        ),
+                        label = { Text(level.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                    )
+                }
+            }
+            Text(
+                text = selectedPriority.dismissalRule,
+                fontSize = 11.sp,
+                color = Color(0xFF94A3B8)
+            )
+
+            Text("2. Schedule", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF38BDF8))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(ScheduleType.entries) { type ->
+                    FilterChip(
+                        selected = selectedSchedule == type,
+                        onClick = { selectedSchedule = type },
+                        label = { Text(type.label, fontSize = 12.sp) }
+                    )
+                }
             }
 
             when (selectedSchedule) {
-                ScheduleType.ONE_TIME -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                DatePickerDialog(
-                                    context,
-                                    { _, y, m, d ->
-                                        pickedYear = y
-                                        pickedMonth = m
-                                        pickedDay = d
-                                    },
-                                    pickedYear,
-                                    pickedMonth,
-                                    pickedDay
-                                ).show()
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Date: $pickedDay/${pickedMonth + 1}/$pickedYear")
-                        }
-
-                        OutlinedButton(
-                            onClick = { showTimePickerDialog = true },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Time: $formattedPickedTime")
-                        }
-                    }
-                }
+                ScheduleType.ONE_TIME -> Unit
 
                 ScheduleType.HOURLY_RANGE -> {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = intervalHours,
                             onValueChange = { intervalHours = it },
-                            label = { Text("Every N Hours") },
+                            label = { Text("Every N Hrs", fontSize = 11.sp) },
+                            singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
                             value = durationDays,
                             onValueChange = { durationDays = it },
-                            label = { Text("For N Days") },
+                            label = { Text("For N Days", fontSize = 11.sp) },
+                            singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -1844,13 +1947,15 @@ fun ReminderFormScreen(
                         OutlinedTextField(
                             value = activeStartHour,
                             onValueChange = { activeStartHour = it },
-                            label = { Text("Start Hour (0-23)") },
+                            label = { Text("Start Hr", fontSize = 11.sp) },
+                            singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
                             value = activeEndHour,
                             onValueChange = { activeEndHour = it },
-                            label = { Text("End Hour (1-23)") },
+                            label = { Text("End Hr", fontSize = 11.sp) },
+                            singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -1865,30 +1970,25 @@ fun ReminderFormScreen(
                                 onClick = {
                                     if (isSelected) selectedDays.remove(day) else selectedDays.add(day)
                                 },
-                                label = { Text(day) }
+                                label = { Text(day, fontSize = 11.sp) }
                             )
                         }
-                    }
-                    OutlinedButton(
-                        onClick = { showTimePickerDialog = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Alarm Time: $formattedPickedTime")
                     }
                 }
             }
 
-            // 3. Sound Track Dropdown ("Select from Device" first + Built-in Ringtone Tracks)
+            // 3. Sound Track Dropdown
             Text(
-                text = "3. Sound Track (Dropdown)",
+                text = "3. Sound Track",
                 fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
                 color = Color(0xFF34D399)
             )
 
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = { soundDropdownExpanded = true },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -1900,12 +2000,13 @@ fun ReminderFormScreen(
                             text = if (isPreviewPlaying) "♪ $audioFileName (Playing)" else audioFileName,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            fontSize = 12.sp,
                             color = if (isPreviewPlaying) Color(0xFF34D399) else Color(0xFFF8FAFC),
                             fontWeight = if (isPreviewPlaying) FontWeight.SemiBold else FontWeight.Normal,
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("▼", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                        Text("▼", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
                     }
                 }
 
@@ -1971,42 +2072,47 @@ fun ReminderFormScreen(
                         containerColor = Color(0xFFEF4444),
                         contentColor = Color.White
                     ),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp)
+                        .height(40.dp)
                 ) {
                     Text(
                         text = "■  STOP PREVIEW SOUND",
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp
+                        fontSize = 12.sp
                     )
                 }
             }
 
             // 4. Snooze Options
-            Text("4. Snooze Interval", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(snoozePresets) { (label, mins) ->
+            Text("4. Snooze", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF38BDF8))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                snoozePresets.forEach { (label, mins) ->
                     FilterChip(
                         selected = selectedSnoozeMins == mins,
                         onClick = {
                             selectedSnoozeMins = mins
                             customSnoozeText = mins.toString()
                         },
-                        label = { Text(label) }
+                        label = { Text(label, fontSize = 11.sp) }
                     )
                 }
+                OutlinedTextField(
+                    value = customSnoozeText,
+                    onValueChange = { customSnoozeText = it },
+                    label = { Text("Mins", fontSize = 10.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
             }
-            OutlinedTextField(
-                value = customSnoozeText,
-                onValueChange = { customSnoozeText = it },
-                label = { Text("Custom Snooze Minutes") },
-                modifier = Modifier.fillMaxWidth()
-            )
 
             // 5. To-Do Checklist
-            Text("5. Multi-Item To-Do Checklist", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+            Text("5. Checklist", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF38BDF8))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2014,7 +2120,8 @@ fun ReminderFormScreen(
                 OutlinedTextField(
                     value = newTodoText,
                     onValueChange = { newTodoText = it },
-                    label = { Text("Add subtask") },
+                    label = { Text("Add subtask", fontSize = 11.sp) },
+                    singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
                 Button(
@@ -2025,7 +2132,7 @@ fun ReminderFormScreen(
                         }
                     }
                 ) {
-                    Text("Add")
+                    Text("Add", fontSize = 12.sp)
                 }
             }
             todoList.forEach { item ->
@@ -2034,23 +2141,92 @@ fun ReminderFormScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("• ${item.text}", color = Color(0xFFF1F5F9))
+                    Text("• ${item.text}", color = Color(0xFFF1F5F9), fontSize = 12.sp)
                     TextButton(onClick = { todoList.remove(item) }) {
-                        Text("Remove", color = Color(0xFFF87171))
+                        Text("Remove", color = Color(0xFFF87171), fontSize = 11.sp)
                     }
                 }
             }
 
-            // 6. Heavy Detailed Notes
-            Text("6. Heavy Detailed Notes", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+            // 6. Notes
+            Text("6. Notes", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF38BDF8))
             OutlinedTextField(
                 value = notes,
                 onValueChange = { notes = it },
-                label = { Text("Write detailed instructions or notes shown when alarm rings...") },
-                minLines = 4,
-                maxLines = 10,
+                label = { Text("Optional notes...", fontSize = 11.sp) },
+                minLines = 2,
+                maxLines = 5,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            if (inactiveOtherTasks.isNotEmpty()) {
+                Text(
+                    text = "Inactive Alarms (Tap to expand)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8),
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                inactiveOtherTasks.forEach { inactive ->
+                    val isExpanded = expandedInactiveInEditIds.contains(inactive.id)
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141B29)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize()
+                            .border(1.dp, Color(0xFF263248), RoundedCornerShape(12.dp))
+                            .clickable {
+                                expandedInactiveInEditIds = if (isExpanded) {
+                                    expandedInactiveInEditIds - inactive.id
+                                } else {
+                                    expandedInactiveInEditIds + inactive.id
+                                }
+                            }
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "${inactive.priority.label} • ${inactive.title}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFCBD5E1),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = inactiveTimeFormatter.format(Date(inactive.triggerTimeMillis)),
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF38BDF8),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (isExpanded) {
+                                Text(
+                                    text = "Snooze: ${inactive.snoozeMinutes}m • Ringtone: ${inactive.audioFileName}",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                                if (inactive.notes.isNotBlank()) {
+                                    Text(
+                                        text = inactive.notes,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFFE2E8F0),
+                                        modifier = Modifier.padding(top = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             Button(
                 onClick = { submitForm() },
@@ -2058,15 +2234,15 @@ fun ReminderFormScreen(
                     containerColor = Color(0xFF38BDF8),
                     contentColor = Color(0xFF06131C)
                 ),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(46.dp)
             ) {
-                Text("SAVE REMINDER", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+                Text("SAVE REMINDER", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
             }
 
-            Spacer(modifier = Modifier.height(36.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }

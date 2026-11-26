@@ -119,10 +119,17 @@ class AlarmRingingActivity : ComponentActivity() {
                         },
                         onCompleteAndStop = { updatedTodos, grade ->
                             stopAlarmService()
-                            val nextTime = AlarmScheduler.computeNextTriggerMillis(
-                                task,
-                                System.currentTimeMillis() + 5_000L
-                            )
+                            val nextTime = if (task.scheduleType == ScheduleType.ONE_TIME) {
+                                null
+                            } else {
+                                AlarmScheduler.computeNextTriggerMillis(
+                                    task,
+                                    System.currentTimeMillis() + 5_000L
+                                )
+                            }
+                            if (nextTime == null) {
+                                AlarmScheduler.cancelTask(this, task.id)
+                            }
                             val updatedTask = task.copy(
                                 todos = updatedTodos,
                                 lastGrade = grade,

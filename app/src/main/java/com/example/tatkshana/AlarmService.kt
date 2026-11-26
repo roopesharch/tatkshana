@@ -25,18 +25,31 @@ class AlarmService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var activePriority: PriorityLevel = PriorityLevel.NORMAL
-    private var alarmStartMillis: Long = 0L
+    private var activeTaskId: String? = null
+    private var soundSilencedManually: Boolean = false
 
     private val timeoutHandler = Handler(Looper.getMainLooper())
 
     private val stopSoundAfter30sRunnable = Runnable {
-        if (isNormalOrMedium(activePriority)) {
+        if (isNormalOrMedium(activePriority) && !soundSilencedManually) {
             silenceAlarmSound()
         }
     }
 
-    private val stopVibrationAfter30sRunnable = Runnable {
+    private val autoExpireNormalMediumAfter1mRunnable = Runnable {
         if (isNormalOrMedium(activePriority)) {
+            val taskId = activeTaskId
+            stopAlarmPlayback()
+            if (!taskId.isNullOrBlank()) {
+                AlarmLifecycleController.completeFromPopupSilence(this, taskId)
+            }
+            AlarmRingingActivity.closeRingingScreen()
+            stopSelf()
+        }
+    }
+
+    private val stopHighCriticalVibrationAfter7mRunnable = Runnable {
+        if (!isNormalOrMedium(activePriority)) {
             stopVibration()
         }
     }
@@ -52,30 +65,14 @@ class AlarmService : Service() {
             }
 
             "SILENCE_FROM_POPUP" -> {
-                val taskId = intent.getStringExtra("TASK_ID")
+                val taskId = intent.getStringExtra("TASK_ID") ?: activeTaskId
                 val task = taskId?.let { TaskStorage.getTaskById(this, it) }
                 val priority = task?.priority ?: activePriority
 
                 if (isNormalOrMedium(priority)) {
                     stopAlarmPlayback()
-                    if (task != null) {
-                        AlarmScheduler.cancelTask(this, task.id)
-                        val nextTime = if (task.scheduleType == ScheduleType.ONE_TIME) {
-                            null
-                        } else {
-                            AlarmScheduler.computeNextTriggerMillis(
-                                task,
-                                System.currentTimeMillis() + 5_000L
-                            )
-                        }
-                        val updatedTask = task.copy(
-                            isEnabled = nextTime != null,
-                            triggerTimeMillis = nextTime ?: task.triggerTimeMillis
-                        )
-                        TaskStorage.updateTask(this, updatedTask)
-                        if (nextTime != null) {
-                            AlarmScheduler.scheduleTask(this, updatedTask, nextTime)
-                        }
+                    if (!taskId.isNullOrBlank()) {
+                        AlarmLifecycleController.completeFromPopupSilence(this, taskId)
                     }
                     AlarmRingingActivity.closeRingingScreen()
                     try {
@@ -92,19 +89,38 @@ class AlarmService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 } else {
+                    soundSilencedManually = true
                     silenceAlarmSound()
                     ensureVibrationRunning()
+                    scheduleHighCritical7mVibrationCap()
+                    if (!taskId.isNullOrBlank()) {
+                        val ringIntent = Intent(this, AlarmRingingActivity::class.java).apply {
+                            putExtra("TASK_ID", taskId)
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                            )
+                        }
+                        try {
+                            startActivity(ringIntent)
+                        } catch (_: Exception) {
+                        }
+                    }
                     return START_STICKY
                 }
             }
 
             "MUTE_SOUND_KEEP_VIBRATION" -> {
+                soundSilencedManually = true
                 silenceAlarmSound()
 
                 if (isNormalOrMedium(activePriority)) {
-                    scheduleRemaining30sVibrationCap()
+                    ensureVibrationRunning()
                 } else {
                     ensureVibrationRunning()
+                    scheduleHighCritical7mVibrationCap()
                 }
 
                 return START_STICKY
@@ -178,7 +194,7 @@ class AlarmService : Service() {
         val silenceActionLabel = if (isNormalOrMedium(task.priority)) {
             "Silence (Turn Off)"
         } else {
-            "Silence"
+            "Silence & Open"
         }
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -225,32 +241,24 @@ class AlarmService : Service() {
 
     private fun clearTimers() {
         timeoutHandler.removeCallbacks(stopSoundAfter30sRunnable)
-        timeoutHandler.removeCallbacks(stopVibrationAfter30sRunnable)
+        timeoutHandler.removeCallbacks(autoExpireNormalMediumAfter1mRunnable)
+        timeoutHandler.removeCallbacks(stopHighCriticalVibrationAfter7mRunnable)
     }
 
-    private fun scheduleRemaining30sVibrationCap() {
-        timeoutHandler.removeCallbacks(stopVibrationAfter30sRunnable)
-
-        val elapsed = (System.currentTimeMillis() - alarmStartMillis)
-            .coerceAtLeast(0L)
-
-        val remainingMillis = AUTO_STOP_MILLIS - elapsed
-
-        if (remainingMillis <= 0L) {
-            stopVibration()
-        } else {
-            timeoutHandler.postDelayed(
-                stopVibrationAfter30sRunnable,
-                remainingMillis
-            )
-        }
+    private fun scheduleHighCritical7mVibrationCap() {
+        timeoutHandler.removeCallbacks(stopHighCriticalVibrationAfter7mRunnable)
+        timeoutHandler.postDelayed(
+            stopHighCriticalVibrationAfter7mRunnable,
+            SEVEN_MINUTES_MILLIS
+        )
     }
 
     private fun startAlarmPlayback(task: ReminderTask) {
         stopAlarmPlayback()
 
         activePriority = task.priority
-        alarmStartMillis = System.currentTimeMillis()
+        activeTaskId = task.id
+        soundSilencedManually = false
 
         val defaultUri = RingtoneManager.getDefaultUri(
             RingtoneManager.TYPE_ALARM
@@ -317,12 +325,11 @@ class AlarmService : Service() {
         if (isNormalOrMedium(activePriority)) {
             timeoutHandler.postDelayed(
                 stopSoundAfter30sRunnable,
-                AUTO_STOP_MILLIS
+                THIRTY_SECONDS_MILLIS
             )
-
             timeoutHandler.postDelayed(
-                stopVibrationAfter30sRunnable,
-                AUTO_STOP_MILLIS
+                autoExpireNormalMediumAfter1mRunnable,
+                ONE_MINUTE_MILLIS
             )
         }
     }
@@ -369,7 +376,7 @@ class AlarmService : Service() {
     }
 
     private fun stopVibration() {
-        timeoutHandler.removeCallbacks(stopVibrationAfter30sRunnable)
+        timeoutHandler.removeCallbacks(stopHighCriticalVibrationAfter7mRunnable)
 
         try {
             vibrator?.cancel()
@@ -416,6 +423,8 @@ class AlarmService : Service() {
 
     companion object {
         const val CHANNEL_ID = "tatkshana_alarm_channel_v2"
-        private const val AUTO_STOP_MILLIS = 30_000L
+        private const val THIRTY_SECONDS_MILLIS = 30_000L
+        private const val ONE_MINUTE_MILLIS = 60_000L
+        private const val SEVEN_MINUTES_MILLIS = 7 * 60_000L
     }
 }
