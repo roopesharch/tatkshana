@@ -1,5 +1,6 @@
 package com.roopesh.tatkshana
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -27,6 +28,7 @@ class AlarmService : Service() {
     private var activePriority: PriorityLevel = PriorityLevel.NORMAL
     private var activeTaskId: String? = null
     private var soundSilencedManually: Boolean = false
+    private var isRingingUiVisible: Boolean = false
 
     private val timeoutHandler = Handler(Looper.getMainLooper())
 
@@ -56,12 +58,21 @@ class AlarmService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-
             "STOP_ALARM" -> {
                 stopAlarmPlayback()
                 AlarmRingingActivity.closeRingingScreen()
                 stopSelf()
                 return START_NOT_STICKY
+            }
+
+            "HIDE_POPUP_FOR_RINGING_UI" -> {
+                isRingingUiVisible = true
+                return START_STICKY
+            }
+
+            "SHOW_POPUP_IF_NEEDED" -> {
+                isRingingUiVisible = false
+                return START_STICKY
             }
 
             "SILENCE_FROM_POPUP" -> {
@@ -112,7 +123,8 @@ class AlarmService : Service() {
                 }
             }
 
-            "MUTE_SOUND_KEEP_VIBRATION" -> {
+            "MUTE_SOUND_KEEP_VIBRATION",
+            AlarmLifecycleController.ACTION_MUTE_SOUND_KEEP_VIBRATION -> {
                 soundSilencedManually = true
                 silenceAlarmSound()
 
@@ -128,6 +140,7 @@ class AlarmService : Service() {
         }
 
         val taskId = intent?.getStringExtra("TASK_ID")
+            ?: intent?.getStringExtra(AlarmLifecycleController.EXTRA_TASK_ID)
             ?: return START_NOT_STICKY
 
         val task = TaskStorage.getTaskById(this, taskId)
@@ -224,7 +237,7 @@ class AlarmService : Service() {
 
         startAlarmPlayback(task)
 
-        if (Settings.canDrawOverlays(this)) {
+        if (!isRingingUiVisible && Settings.canDrawOverlays(this)) {
             try {
                 startActivity(fullScreenIntent)
             } catch (_: Exception) {
@@ -402,8 +415,7 @@ class AlarmService : Service() {
                 description = "Full-screen priority alarms"
                 setSound(null, null)
                 enableVibration(true)
-                lockscreenVisibility =
-                    android.app.Notification.VISIBILITY_PUBLIC
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             val manager = getSystemService(
@@ -415,6 +427,7 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
+        isRingingUiVisible = false
         stopAlarmPlayback()
         super.onDestroy()
     }

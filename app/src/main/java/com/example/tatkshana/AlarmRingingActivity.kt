@@ -77,6 +77,7 @@ import kotlin.random.Random
 class AlarmRingingActivity : ComponentActivity() {
 
     private var isScreenOffReceiverRegistered = false
+    private var activeTaskId: String? = null
 
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -92,6 +93,7 @@ class AlarmRingingActivity : ComponentActivity() {
         enableShowWhenLockedAndTurnScreenOn()
 
         val taskId = intent.getStringExtra("TASK_ID")
+        activeTaskId = taskId
         val focusSnooze = intent.getBooleanExtra("FOCUS_SNOOZE", false)
         val task = taskId?.let { TaskStorage.getTaskById(this, it) }
 
@@ -102,6 +104,7 @@ class AlarmRingingActivity : ComponentActivity() {
         }
 
         registerScreenOffReceiver()
+        AlarmLifecycleController.setRingingUiVisible(this, true, task.id)
 
         setContent {
             TatkshanaTheme {
@@ -113,11 +116,13 @@ class AlarmRingingActivity : ComponentActivity() {
                         task = task,
                         focusSnooze = focusSnooze,
                         onSnooze = { minutes ->
+                            AlarmLifecycleController.setRingingUiVisible(this, false, task.id)
                             stopAlarmService()
                             closeSelfCompletely()
                             AlarmScheduler.snoozeTask(this, task, minutes)
                         },
                         onCompleteAndStop = { updatedTodos, grade ->
+                            AlarmLifecycleController.setRingingUiVisible(this, false, task.id)
                             stopAlarmService()
                             val nextTime = if (task.scheduleType == ScheduleType.ONE_TIME) {
                                 null
@@ -146,6 +151,16 @@ class AlarmRingingActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AlarmLifecycleController.setRingingUiVisible(this, true, activeTaskId)
+    }
+
+    override fun onPause() {
+        AlarmLifecycleController.setRingingUiVisible(this, false, activeTaskId)
+        super.onPause()
     }
 
     private fun closeSelfCompletely() {
@@ -214,6 +229,7 @@ class AlarmRingingActivity : ComponentActivity() {
     private fun muteAlarmSoundKeepVibration() {
         val muteIntent = Intent(this, AlarmService::class.java).apply {
             action = "MUTE_SOUND_KEEP_VIBRATION"
+            activeTaskId?.let { putExtra("TASK_ID", it) }
         }
         try {
             startService(muteIntent)
@@ -235,6 +251,7 @@ class AlarmRingingActivity : ComponentActivity() {
         if (currentInstance?.get() === this) {
             currentInstance = null
         }
+        AlarmLifecycleController.setRingingUiVisible(this, false, activeTaskId)
         unregisterScreenOffReceiver()
         super.onDestroy()
     }
@@ -281,12 +298,10 @@ fun AlarmRingingScreen(
 
     val timeFormatter = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
 
-    // Challenge for HIGH priority
     val numA = remember { Random.nextInt(12, 39) }
     val numB = remember { Random.nextInt(11, 29) }
     var mathAnswer by remember { mutableStateOf("") }
 
-    // Photo proof & grading for CRITICAL priority
     var proofBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedGrade by remember { mutableStateOf("A - Completed Fully") }
     val grades = listOf("A - Completed Fully", "B - Done with Minor Delay", "C - Partial Progress")
@@ -335,7 +350,6 @@ fun AlarmRingingScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Top Header: Brand + Priority Pill + Live Time
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -367,7 +381,6 @@ fun AlarmRingingScreen(
             )
         }
 
-        // Hero Alarm Card
         Card(
             shape = RoundedCornerShape(22.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF161F31)),
@@ -409,7 +422,6 @@ fun AlarmRingingScreen(
             }
         }
 
-        // Heavy Detailed Notes Display
         if (task.notes.isNotBlank()) {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -436,7 +448,6 @@ fun AlarmRingingScreen(
             }
         }
 
-        // Interactive To-Do Checklist
         if (todos.isNotEmpty()) {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -488,7 +499,6 @@ fun AlarmRingingScreen(
             }
         }
 
-        // Priority Enforcement Gates
         when (task.priority) {
             PriorityLevel.HIGH -> {
                 Card(
@@ -605,7 +615,6 @@ fun AlarmRingingScreen(
             else -> Unit
         }
 
-        // Primary Dismiss Button (Locked until priority requirement met)
         Button(
             onClick = {
                 val finalGrade = if (task.priority == PriorityLevel.CRITICAL) selectedGrade else null
@@ -630,7 +639,6 @@ fun AlarmRingingScreen(
             )
         }
 
-        // Snooze Section
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF141C2B)),
